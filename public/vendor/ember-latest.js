@@ -1,5 +1,5 @@
-// Version: v1.0.0-rc.6-299-ge87d164
-// Last commit: e87d164 (2013-07-29 18:30:35 -0400)
+// Version: v1.0.0-rc.6-241-g2110734
+// Last commit: 2110734 (2013-08-04 14:03:52 -0400)
 
 
 (function() {
@@ -156,8 +156,8 @@ Ember.deprecateFunc = function(message, func) {
 
 })();
 
-// Version: v1.0.0-rc.6-299-ge87d164
-// Last commit: e87d164 (2013-07-29 18:30:35 -0400)
+// Version: v1.0.0-rc.6-241-g2110734
+// Last commit: 2110734 (2013-08-04 14:03:52 -0400)
 
 
 (function() {
@@ -6196,13 +6196,13 @@ function mixinProperties(mixinsMeta, mixin) {
   }
 }
 
-function concatenatedProperties(props, values, base) {
+function concatenatedMixinProperties(concatProp, props, values, base) {
   var concats;
 
   // reset before adding each new mixin to pickup concats from previous
-  concats = values.concatenatedProperties || base.concatenatedProperties;
-  if (props.concatenatedProperties) {
-    concats = concats ? concats.concat(props.concatenatedProperties) : props.concatenatedProperties;
+  concats = values[concatProp] || base[concatProp];
+  if (props[concatProp]) {
+    concats = concats ? concats.concat(props[concatProp]) : props[concatProp];
   }
 
   return concats;
@@ -6269,7 +6269,28 @@ function applyConcatenatedProperties(obj, key, value, values) {
   }
 }
 
-function addNormalizedProperty(base, key, value, meta, descs, values, concats) {
+function applyMergedProperties(obj, key, value, values) {
+  var baseValue = values[key] || obj[key];
+
+  if (!baseValue) { return value; }
+
+  var newBase = Ember.merge({}, baseValue);
+  for (var prop in value) {
+    if (!value.hasOwnProperty(prop)) { continue; }
+
+    var propValue = value[prop];
+    if (isMethod(propValue)) {
+      // TODO: support for Computed Properties, etc?
+      newBase[prop] = giveMethodSuper(obj, prop, propValue, baseValue, {});
+    } else {
+      newBase[prop] = propValue;
+    }
+  }
+
+  return newBase;
+}
+
+function addNormalizedProperty(base, key, value, meta, descs, values, concats, mergings) {
   if (value instanceof Ember.Descriptor) {
     if (value === REQUIRED && descs[key]) { return CONTINUE; }
 
@@ -6285,8 +6306,12 @@ function addNormalizedProperty(base, key, value, meta, descs, values, concats) {
     // impl super if needed...
     if (isMethod(value)) {
       value = giveMethodSuper(base, key, value, values, descs);
-    } else if ((concats && a_indexOf.call(concats, key) >= 0) || key === 'concatenatedProperties') {
+    } else if ((concats && a_indexOf.call(concats, key) >= 0) || 
+                key === 'concatenatedProperties' ||
+                key === 'mergedProperties') {
       value = applyConcatenatedProperties(base, key, value, values);
+    } else if ((mergings && a_indexOf.call(mergings, key) >= 0)) {
+      value = applyMergedProperties(base, key, value, values);
     }
 
     descs[key] = undefined;
@@ -6295,7 +6320,7 @@ function addNormalizedProperty(base, key, value, meta, descs, values, concats) {
 }
 
 function mergeMixins(mixins, m, descs, values, base, keys) {
-  var mixin, props, key, concats, meta;
+  var mixin, props, key, concats, mergings, meta;
 
   function removeKeys(keyName) {
     delete descs[keyName];
@@ -6311,12 +6336,13 @@ function mergeMixins(mixins, m, descs, values, base, keys) {
 
     if (props) {
       meta = Ember.meta(base);
-      concats = concatenatedProperties(props, values, base);
+      concats = concatenatedMixinProperties('concatenatedProperties', props, values, base);
+      mergings = concatenatedMixinProperties('mergedProperties', props, values, base);
 
       for (key in props) {
         if (!props.hasOwnProperty(key)) { continue; }
         keys.push(key);
-        addNormalizedProperty(base, key, props[key], meta, descs, values, concats);
+        addNormalizedProperty(base, key, props[key], meta, descs, values, concats, mergings);
       }
 
       // manually copy toString() because some JS engines do not enumerate it
@@ -6415,6 +6441,7 @@ function applyMixin(obj, mixins, partial) {
   // Go through all mixins and hashes passed in, and:
   //
   // * Handle concatenated properties
+  // * Handle merged properties
   // * Set up _super wrapping if necessary
   // * Set up computed property descriptors
   // * Copying `toString` in broken browsers
@@ -6754,26 +6781,32 @@ Ember.immediateObserver = function() {
 };
 
 /**
-  When observers fire, they are called with the arguments `obj`, `keyName`
-  and `value`. In a typical observer, value is the new, post-change value.
+  When observers fire, they are called with the arguments `obj`, `keyName`.
 
-  A `beforeObserver` fires before a property changes. The `value` argument contains
-  the pre-change value.
+  Note, `@each.property` observer is called per each add or replace of an element
+  and it's not called with a specific enumeration item.
+
+  A `beforeObserver` fires before a property changes.
 
   A `beforeObserver` is an alternative form of `.observesBefore()`.
 
   ```javascript
   App.PersonView = Ember.View.extend({
-    valueWillChange: function (obj, keyName, value) {
-      this.changingFrom = value;
+    friends: [{ name: 'Tom' }, { name: 'Stefan' }, { name: 'Kris' }],
+    valueWillChange: function (obj, keyName) {
+      this.changingFrom = obj.get(keyName);
     }.observesBefore('content.value'),
-    valueDidChange: function(obj, keyName, value) {
+    valueDidChange: function(obj, keyName) {
         // only run if updating a value already in the DOM
         if (this.get('state') === 'inDOM') {
-            var color = value > this.changingFrom ? 'green' : 'red';
+            var color = obj.get(keyName) > this.changingFrom ? 'green' : 'red';
             // logic
         }
-    }.observes('content.value')
+    }.observes('content.value'),
+    friendsDidChange: function(obj, keyName) {
+      // some logic
+      // obj.get(keyName) returns friends array
+    }.observes('friends.@each.name')
   });
   ```
 
@@ -11954,8 +11987,6 @@ CoreObject.PrototypeMixin = Mixin.create({
     return this;
   },
 
-  isInstance: true,
-
   /**
     An overridable method called when objects are instantiated. By default,
     does nothing unless it is overridden during class definition.
@@ -12098,6 +12129,8 @@ CoreObject.PrototypeMixin = Mixin.create({
 
   /**
     Override to implement teardown.
+
+    @method willDestroy
    */
   willDestroy: Ember.K,
 
@@ -15666,6 +15699,10 @@ Ember.CoreView = Ember.Object.extend(Ember.Evented, {
     }
   }).property('_parentView'),
 
+  _viewForYield: Ember.computed(function(){
+    return this;
+  }).property(),
+
   state: null,
 
   _parentView: null,
@@ -15980,7 +16017,7 @@ class:
 
   ```javascript
   // Applies 'enabled' class when isEnabled is true and 'disabled' when isEnabled is false
-  Ember.View.create({
+  Ember.View.extend({
     classNameBindings: ['isEnabled:enabled:disabled']
     isEnabled: true
   });
@@ -16003,7 +16040,7 @@ class:
 
   ```javascript
   // Applies no class when isEnabled is true and class 'disabled' when isEnabled is false
-  Ember.View.create({
+  Ember.View.extend({
     classNameBindings: ['isEnabled::disabled']
     isEnabled: true
   });
@@ -16540,6 +16577,9 @@ Ember.View = Ember.CoreView.extend(
 
   /**
     The parent context for this template.
+
+    @method parentContext
+    @return {Ember.View}
   */
   parentContext: function() {
     var parentView = get(this, '_parentView');
@@ -17461,7 +17501,7 @@ Ember.View = Ember.CoreView.extend(
 
     ```javascript
     // Applies the 'high' class to the view element
-    Ember.View.create({
+    Ember.View.extend({
       classNameBindings: ['priority']
       priority: 'high'
     });
@@ -17472,7 +17512,7 @@ Ember.View = Ember.CoreView.extend(
 
     ```javascript
     // Applies the 'is-urgent' class to the view element
-    Ember.View.create({
+    Ember.View.extend({
       classNameBindings: ['isUrgent']
       isUrgent: true
     });
@@ -17483,7 +17523,7 @@ Ember.View = Ember.CoreView.extend(
 
     ```javascript
     // Applies the 'urgent' class to the view element
-    Ember.View.create({
+    Ember.View.extend({
       classNameBindings: ['isUrgent:urgent']
       isUrgent: true
     });
@@ -17504,7 +17544,7 @@ Ember.View = Ember.CoreView.extend(
     ```javascript
     // Applies the type attribute to the element
     // with the value "button", like <div type="button">
-    Ember.View.create({
+    Ember.View.extend({
       attributeBindings: ['type'],
       type: 'button'
     });
@@ -17515,7 +17555,7 @@ Ember.View = Ember.CoreView.extend(
 
     ```javascript
     // Renders something like <div enabled="enabled">
-    Ember.View.create({
+    Ember.View.extend({
       attributeBindings: ['enabled'],
       enabled: true
     });
@@ -19317,35 +19357,64 @@ Ember.Component = Ember.View.extend(Ember.TargetActionSupport, {
     return parentView ? get(parentView, 'controller') : null;
   }).property('_parentView'),
 
+  _viewForYield: Ember.computed(function(){
+    return get(this, '_parentView') || this;
+  }).property('_parentView'),
+
   /**
-   Sends an action to component's controller. A component inherits its
-   controller from the context in which it is used.
+    Sends an action to component's controller. A component inherits its
+    controller from the context in which it is used.
 
-   By default, calling `sendAction()` will send an action with the name
-   of the component's `action` property.
+    By default, calling `sendAction()` will send an action with the name
+    of the component's `action` property.
 
-   For example, if the component had a property `action` with the value
-   `"addItem"`, calling `sendAction()` would send the `addItem` action
-   to the component's controller.
+    For example, if the component had a property `action` with the value
+    `"addItem"`, calling `sendAction()` would send the `addItem` action
+    to the component's controller.
 
-   If you provide an argument to `sendAction()`, that key will be used to look
-   up the action name.
+    If you provide the `action` argument to `sendAction()`, that key will
+    be used to look up the action name.
 
-   For example, if the component had a property `playing` with the value
-   `didStartPlaying`, calling `sendAction('playing')` would send the
-   `didStartPlaying` action to the component's controller.
+    For example, if the component had a property `playing` with the value
+    `didStartPlaying`, calling `sendAction('playing')` would send the
+    `didStartPlaying` action to the component's controller.
 
-   Whether or not you are using the default action or a named action, if
-   the action name is not defined on the component, calling `sendAction()`
-   does not have any effect.
+    Whether or not you are using the default action or a named action, if
+    the action name is not defined on the component, calling `sendAction()`
+    does not have any effect.
 
-   For example, if you call `sendAction()` on a component that does not have
-   an `action` property defined, no action will be sent to the controller,
-   nor will an exception be raised.
+    For example, if you call `sendAction()` on a component that does not have
+    an `action` property defined, no action will be sent to the controller,
+    nor will an exception be raised.
 
-   @param [action] {String} the action to trigger
+    You can send a context object with the action by supplying the `context`
+    argument. The context will be supplied as the first argument in the
+    target's action method. Example:
+
+    ```javascript
+    App.MyTree = Ember.Component.extend({
+      click: function() {
+        this.sendAction('didClickTreeNode', this.get('node'));
+      }
+    });
+   
+    App.CategoriesController = Ember.Controller.extend({
+      didClickCategory: function(category) {
+        //Do something with the node/category that was clicked
+      }
+    });
+    ```
+
+    ```handlebars
+    {{! categories.hbs}}
+    {{my-tree didClickTreeNode=didClickCategory}}
+    ```
+
+    @method sendAction
+    @param [action] {String} the action to trigger
+    @param [context] {*} a context to send with the action
   */
-  sendAction: function(action) {
+  sendAction: function(action, context) {
     var actionName;
 
     // Send the default action
@@ -19357,12 +19426,12 @@ Ember.Component = Ember.View.extend(Ember.TargetActionSupport, {
       Ember.assert("The " + action + " action was triggered on the component " + this.toString() + ", but the action name (" + actionName + ") was not a string.", isNone(actionName) || typeof actionName === 'string');
     }
 
-
     // If no action name for that action could be found, just abort.
     if (actionName === undefined) { return; }
 
     this.triggerAction({
-      action: actionName
+      action: actionName,
+      actionContext: context
     });
   }
 });
@@ -19990,7 +20059,7 @@ function makeBindings(options) {
 
   ## Custom view helper example
 
-  Assuming a view subclass named `App.CalenderView` were defined, a helper
+  Assuming a view subclass named `App.CalendarView` were defined, a helper
   for rendering instances of this view could be registered as follows:
 
   ```javascript
@@ -22416,7 +22485,7 @@ Ember.Handlebars.registerHelper('unbound', function(property, fn) {
 var handlebarsGet = Ember.Handlebars.get, normalizePath = Ember.Handlebars.normalizePath;
 
 /**
-  `log` allows you to output the value of a value in the current rendering
+  `log` allows you to output the value of a variable in the current rendering
   context.
 
   ```handlebars
@@ -22976,7 +23045,7 @@ var get = Ember.get, set = Ember.set;
   @return {String} HTML string
 */
 Ember.Handlebars.registerHelper('yield', function(options) {
-  var currentView = options.data.view, view = currentView, template;
+  var currentView = options.data.view, view = currentView;
 
   while (view && !get(view, 'layout')) {
     view = get(view, 'parentView');
@@ -22984,16 +23053,16 @@ Ember.Handlebars.registerHelper('yield', function(options) {
 
   Ember.assert("You called yield in a template that was not a layout", !!view);
 
-  template = get(view, 'template');
-
-  var keywords = view._parentView.cloneKeywords();
+  var template    = get(view, 'template'),
+    contextView   = get(view, '_viewForYield'),
+    keywords      = contextView.cloneKeywords();
 
   currentView.appendChild(Ember.View, {
-    isVirtual: true,
-    tagName: '',
-    template: template,
-    context: get(view._parentView, 'context'),
-    controller: get(view._parentView, 'controller'),
+    isVirtual:    true,
+    tagName:      '',
+    template:     template,
+    context:      get(contextView, 'context'),
+    controller:   get(contextView, 'controller'),
     templateData: {keywords: keywords}
   });
 });
@@ -24356,21 +24425,16 @@ function registerComponent(container, name) {
 */
 
 Ember.onLoad('Ember.Application', function(Application) {
-  if (Application.initializer) {
-    Application.initializer({
-      name: 'domTemplates',
-      initialize: bootstrap
-    });
+  Application.initializer({
+    name: 'domTemplates',
+    initialize: bootstrap
+  });
 
-    Application.initializer({
-      name: 'registerComponents',
-      after: 'domTemplates',
-      initialize: registerComponents
-    });
-  } else {
-    // for ember-old-router
-    Ember.onLoad('application', bootstrap);
-  }
+  Application.initializer({
+    name: 'registerComponents',
+    after: 'domTemplates',
+    initialize: registerComponents
+  });
 });
 
 })();
@@ -25484,10 +25548,6 @@ define("router",
       eachHandler(partition.entered, function(handlerInfo) {
         handlerEnteredOrUpdated(transition, currentHandlerInfos, handlerInfo, true);
       });
-
-      if (router.didTransition) {
-        router.didTransition(handlerInfos);
-      }
     }
 
     /**
@@ -25656,7 +25716,8 @@ define("router",
 
       var matchPointResults = getMatchPoint(router, recogHandlers, providedModelsArray, params),
           targetName = recogHandlers[recogHandlers.length - 1].handler,
-          wasTransitioning = false;
+          wasTransitioning = false,
+          currentHandlerInfos = router.currentHandlerInfos;
 
       // Check if there's already a transition underway.
       if (router.activeTransition) { 
@@ -25682,7 +25743,7 @@ define("router",
       // Fire 'willTransition' event on current handlers, but don't fire it
       // if a transition was already underway.
       if (!wasTransitioning) {
-        trigger(router.currentHandlerInfos, true, ['willTransition', transition]);
+        trigger(currentHandlerInfos, true, ['willTransition', transition]);
       }
 
       log(router, transition.sequence, "Beginning validation for transition to " + transition.targetName);
@@ -25695,7 +25756,19 @@ define("router",
         checkAbort(transition);
 
         try {
-          finalizeTransition(transition, handlerInfos);
+          log(router, transition.sequence, "Validation succeeded, finalizing transition;");
+
+          // Don't overwrite contexts / update URL if this was a noop transition.
+          if (!currentHandlerInfos || !currentHandlerInfos.length ||
+              currentHandlerInfos.length !== matchPointResults.matchPoint) { 
+            finalizeTransition(transition, handlerInfos);
+          }
+
+          if (router.didTransition) {
+            router.didTransition(handlerInfos);
+          }
+
+          log(router, transition.sequence, "TRANSITION COMPLETE.");
 
           // Resolve with the final handler.
           deferred.resolve(handlerInfos[handlerInfos.length - 1].handler);
@@ -25765,8 +25838,6 @@ define("router",
           seq = transition.sequence,
           handlerName = handlerInfos[handlerInfos.length - 1].name;
 
-      log(router, seq, "Validation succeeded, finalizing transition;");
-
       // Collect params for URL.
       var objects = [], providedModels = transition.providedModelsArray.slice();
       for (var i = handlerInfos.length - 1; i>=0; --i) {
@@ -25796,7 +25867,6 @@ define("router",
       }
 
       setupContexts(transition, handlerInfos);
-      log(router, seq, "TRANSITION COMPLETE.");
     }
 
     /**
@@ -26182,22 +26252,6 @@ var get = Ember.get, set = Ember.set;
 var defineProperty = Ember.defineProperty;
 
 var DefaultView = Ember._MetamorphView;
-function setupLocation(router) {
-  var location = get(router, 'location'),
-      rootURL = get(router, 'rootURL'),
-      options = {};
-
-  if (typeof rootURL === 'string') {
-    options.rootURL = rootURL;
-  }
-
-  if ('string' === typeof location) {
-    options.implementation = location;
-    location = set(router, 'location', Ember.Location.create(options));
-
-  }
-}
-
 /**
   The `Ember.Router` class manages the application state and URLs. Refer to
   the [routing guide](http://emberjs.com/guides/routing/) for documentation.
@@ -26212,7 +26266,7 @@ Ember.Router = Ember.Object.extend({
   init: function() {
     this.router = this.constructor.router || this.constructor.map(Ember.K);
     this._activeViews = {};
-    setupLocation(this);
+    this._setupLocation();
   },
 
   url: Ember.computed(function() {
@@ -26227,7 +26281,7 @@ Ember.Router = Ember.Object.extend({
         container = this.container,
         self = this;
 
-    setupRouter(this, router, location);
+    this._setupRouter(router, location);
 
     container.register('view:default', DefaultView);
     container.register('view:toplevel', Ember.View.extend());
@@ -26241,7 +26295,7 @@ Ember.Router = Ember.Object.extend({
 
   didTransition: function(infos) {
     var appController = this.container.lookup('controller:application'),
-        path = routePath(infos);
+        path = Ember.Router._routePath(infos);
 
     if (!('currentPath' in appController)) {
       defineProperty(appController, 'currentPath');
@@ -26255,15 +26309,15 @@ Ember.Router = Ember.Object.extend({
   },
 
   handleURL: function(url) {
-    return doTransition(this, 'handleURL', [url]);
+    return this._doTransition('handleURL', [url]);
   },
 
   transitionTo: function() {
-    return doTransition(this, 'transitionTo', arguments);
+    return this._doTransition('transitionTo', arguments);
   },
 
   replaceWith: function() {
-    return doTransition(this, 'replaceWith', arguments);
+    return this._doTransition('replaceWith', arguments);
   },
 
   generate: function() {
@@ -26314,159 +26368,155 @@ Ember.Router = Ember.Object.extend({
 
     this._activeViews[templateName] = [view, disconnect];
     view.one('willDestroyElement', this, disconnect);
-  }
-});
+  },
 
-function getHandlerFunction(router) {
-  var seen = {}, container = router.container,
-      DefaultRoute = container.resolve('route:basic');
+  _setupLocation: function() {
+    var location = get(this, 'location'),
+        rootURL = get(this, 'rootURL'),
+        options = {};
 
-  return function(name) {
-    var routeName = 'route:' + name,
+    if (typeof rootURL === 'string') {
+      options.rootURL = rootURL;
+    }
+
+    if ('string' === typeof location) {
+      options.implementation = location;
+      location = set(this, 'location', Ember.Location.create(options));
+    }
+  },
+
+  _getHandlerFunction: function() {
+    var seen = {}, container = this.container,
+        DefaultRoute = container.resolve('route:basic'),
+        self = this;
+
+    return function(name) {
+      var routeName = 'route:' + name,
+          handler = container.lookup(routeName);
+
+      if (seen[name]) { return handler; }
+
+      seen[name] = true;
+
+      if (!handler) {
+        if (name === 'loading') { return {}; }
+
+        container.register(routeName, DefaultRoute.extend());
         handler = container.lookup(routeName);
 
-    if (seen[name]) { return handler; }
-
-    seen[name] = true;
-
-    if (!handler) {
-      if (name === 'loading') { return {}; }
-
-      container.register(routeName, DefaultRoute.extend());
-      handler = container.lookup(routeName);
-
-      if (get(router, 'namespace.LOG_ACTIVE_GENERATION')) {
-        Ember.Logger.info("generated -> " + routeName, { fullName: routeName });
+        if (get(self, 'namespace.LOG_ACTIVE_GENERATION')) {
+          Ember.Logger.info("generated -> " + routeName, { fullName: routeName });
+        }
       }
-    }
 
-    if (name === 'application') {
-      // Inject default `error` handler.
-      handler.events = handler.events || {};
-      handler.events.error = handler.events.error || defaultErrorHandler;
-    }
+      if (name === 'application') {
+        // Inject default `error` handler.
+        handler.events = handler.events || {};
+        handler.events.error = handler.events.error || Ember.Router._defaultErrorHandler;
+      }
 
-    handler.routeName = name;
-    return handler;
-  };
-}
+      handler.routeName = name;
+      return handler;
+    };
+  },
 
-function defaultErrorHandler(error, transition) {
-  Ember.Logger.error('Error while loading route:', error);
+  _setupRouter: function(router, location) {
+    var lastURL, emberRouter = this;
 
-  // Using setTimeout allows us to escape from the Promise's try/catch block
-  setTimeout(function() { throw error; });
-}
+    router.getHandler = this._getHandlerFunction();
 
-
-function routePath(handlerInfos) {
-  var path = [];
-
-  for (var i=1, l=handlerInfos.length; i<l; i++) {
-    var name = handlerInfos[i].name,
-        nameParts = name.split(".");
-
-    path.push(nameParts[nameParts.length - 1]);
-  }
-
-  return path.join(".");
-}
-
-function setupRouter(emberRouter, router, location) {
-  var lastURL;
-
-  router.getHandler = getHandlerFunction(emberRouter);
-
-  var doUpdateURL = function() {
-    location.setURL(lastURL);
-  };
-
-  router.updateURL = function(path) {
-    lastURL = path;
-    Ember.run.once(doUpdateURL);
-  };
-
-  if (location.replaceURL) {
-    var doReplaceURL = function() {
-      location.replaceURL(lastURL);
+    var doUpdateURL = function() {
+      location.setURL(lastURL);
     };
 
-    router.replaceURL = function(path) {
+    router.updateURL = function(path) {
       lastURL = path;
-      Ember.run.once(doReplaceURL);
+      Ember.run.once(doUpdateURL);
     };
-  }
 
-  router.didTransition = function(infos) {
-    emberRouter.didTransition(infos);
-  };
-}
+    if (location.replaceURL) {
+      var doReplaceURL = function() {
+        location.replaceURL(lastURL);
+      };
 
-function doTransition(router, method, args) {
-  // Normalize blank route to root URL.
-  args = [].slice.call(args);
-  args[0] = args[0] || '/';
-
-  var passedName = args[0], name;
-
-  if (passedName.charAt(0) === '/') {
-    name = passedName;
-  } else {
-    if (!router.router.hasRoute(passedName)) {
-      name = args[0] = passedName + '.index';
-    } else {
-      name = passedName;
+      router.replaceURL = function(path) {
+        lastURL = path;
+        Ember.run.once(doReplaceURL);
+      };
     }
 
-    Ember.assert("The route " + passedName + " was not found", router.router.hasRoute(name));
+    router.didTransition = function(infos) {
+      emberRouter.didTransition(infos);
+    };
+  },
+
+  _doTransition: function(method, args) {
+    // Normalize blank route to root URL.
+    args = [].slice.call(args);
+    args[0] = args[0] || '/';
+
+    var passedName = args[0], name, self = this;
+
+    if (passedName.charAt(0) === '/') {
+      name = passedName;
+    } else {
+      if (!this.router.hasRoute(passedName)) {
+        name = args[0] = passedName + '.index';
+      } else {
+        name = passedName;
+      }
+
+      Ember.assert("The route " + passedName + " was not found", this.router.hasRoute(name));
+    }
+
+    var transitionPromise = this.router[method].apply(this.router, args);
+
+    // Don't schedule loading state entry if user has already aborted the transition.
+    if (this.router.activeTransition) {
+      this._scheduleLoadingStateEntry();
+    }
+
+    transitionPromise.then(function(route) {
+      self._transitionCompleted(route);
+    });
+
+    // We want to return the configurable promise object
+    // so that callers of this function can use `.method()` on it,
+    // which obviously doesn't exist for normal RSVP promises.
+    return transitionPromise;
+  },
+
+  _scheduleLoadingStateEntry: function() {
+    if (this._loadingStateActive) { return; }
+    this._shouldEnterLoadingState = true;
+    Ember.run.scheduleOnce('routerTransitions', this, this._enterLoadingState);
+  },
+
+  _enterLoadingState: function() {
+    if (this._loadingStateActive || !this._shouldEnterLoadingState) { return; }
+
+    var loadingRoute = this.router.getHandler('loading');
+    if (loadingRoute) {
+      if (loadingRoute.enter) { loadingRoute.enter(); }
+      if (loadingRoute.setup) { loadingRoute.setup(); }
+      this._loadingStateActive = true;
+    }
+  },
+
+  _exitLoadingState: function () {
+    this._shouldEnterLoadingState = false;
+    if (!this._loadingStateActive) { return; }
+
+    var loadingRoute = this.router.getHandler('loading');
+    if (loadingRoute && loadingRoute.exit) { loadingRoute.exit(); }
+    this._loadingStateActive = false;
+  },
+
+  _transitionCompleted: function(route) {
+    this.notifyPropertyChange('url');
+    this._exitLoadingState();
   }
-
-  var transitionPromise = router.router[method].apply(router.router, args);
-
-  // Don't schedule loading state entry if user has already aborted the transition.
-  if (router.router.activeTransition) {
-    scheduleLoadingStateEntry(router);
-  }
-
-  transitionPromise.then(transitionCompleted);
-
-  // We want to return the configurable promise object
-  // so that callers of this function can use `.method()` on it,
-  // which obviously doesn't exist for normal RSVP promises.
-  return transitionPromise;
-}
-
-function scheduleLoadingStateEntry(router) {
-  if (router._loadingStateActive) { return; }
-  router._shouldEnterLoadingState = true;
-  Ember.run.scheduleOnce('routerTransitions', null, enterLoadingState, router);
-}
-
-function enterLoadingState(router) {
-  if (router._loadingStateActive || !router._shouldEnterLoadingState) { return; }
-
-  var loadingRoute = router.router.getHandler('loading');
-  if (loadingRoute) {
-    if (loadingRoute.enter) { loadingRoute.enter(); }
-    if (loadingRoute.setup) { loadingRoute.setup(); }
-    router._loadingStateActive = true;
-  }
-}
-
-function exitLoadingState(router) {
-  router._shouldEnterLoadingState = false;
-  if (!router._loadingStateActive) { return; }
-
-  var loadingRoute = router.router.getHandler('loading');
-  if (loadingRoute && loadingRoute.exit) { loadingRoute.exit(); }
-  router._loadingStateActive = false;
-}
-
-function transitionCompleted(route) {
-  var router = route.router;
-  router.notifyPropertyChange('url');
-  exitLoadingState(router);
-}
+});
 
 Ember.Router.reopenClass({
   map: function(callback) {
@@ -26492,6 +26542,26 @@ Ember.Router.reopenClass({
     router.callbacks.push(callback);
     router.map(dsl.generate());
     return router;
+  },
+
+  _defaultErrorHandler: function(error, transition) {
+    Ember.Logger.error('Error while loading route:', error);
+
+    // Using setTimeout allows us to escape from the Promise's try/catch block
+    setTimeout(function() { throw error; });
+  },
+
+  _routePath: function(handlerInfos) {
+    var path = [];
+
+    for (var i=1, l=handlerInfos.length; i<l; i++) {
+      var name = handlerInfos[i].name,
+          nameParts = name.split(".");
+
+      path.push(nameParts[nameParts.length - 1]);
+    }
+
+    return path.join(".");
   }
 });
 
@@ -26548,9 +26618,42 @@ Ember.Route = Ember.Object.extend({
     from within a template and the application's current route is this route.
 
     Events can also be invoked from other parts of your application via `Route#send`
-    or `Controller#send`.
+    or `Controller#send`. 
 
-    The context of the event will be this route.
+    The `events` hash will inherit event handlers from
+    the `events` hash defined on extended Route parent classes
+    or mixins rather than just replace the entire hash, e.g.:
+
+    ```js
+    App.CanDisplayBanner = Ember.Mixin.create({
+      events: {
+        displayBanner: function(msg) {
+          // ...
+        }
+      }
+    });
+
+    App.WelcomeRoute = Ember.Route.extend(App.CanDisplayBanner, {
+      events: {
+        playMusic: function() {
+          // ...
+        }
+      }
+    });
+
+    // `WelcomeRoute`, when active, will be able to respond
+    // to both events, since the events hash is merged rather
+    // then replaced when extending mixins / parent classes.
+    this.send('displayBanner');
+    this.send('playMusic');
+    ```
+
+    It is also possible to call `this._super()` from within an
+    event handler if it overrides a handle defined on a parent
+    class or mixin.
+
+    Within a route's event handler, the value of the `this` context 
+    is the Route object.
 
     ## Bubbling
 
@@ -26658,6 +26761,8 @@ Ember.Route = Ember.Object.extend({
     @default null
   */
   events: null,
+
+  mergedProperties: ['events'],
 
   /**
     This hook is executed when the router completely exits this route. It is
@@ -26859,6 +26964,8 @@ Ember.Route = Ember.Object.extend({
     from this hook.
 
     @method afterModel
+    @param {Object} resolvedModel the value returned from `model`,
+      or its resolved value if it was a promise
     @param {Transition} transition
     @return {Promise} if the value returned from this hook is
       a promise, the transition will pause until the transition
@@ -26914,8 +27021,13 @@ Ember.Route = Ember.Object.extend({
 
     @method model
     @param {Object} params the parameters extracted from the URL
+    @param {Transition} transition
+    @return {Object|Promise} the model for this route. If
+      a promise is returned, the transition will pause until 
+      the promise resolves, and the resolved value of the promise
+      will be used as the model for this route.
   */
-  model: function(params, resolvedParentModels) {
+  model: function(params, transition) {
     var match, name, sawParams, value;
 
     for (var prop in params) {
@@ -27049,7 +27161,7 @@ Ember.Route = Ember.Object.extend({
     // NOTE: We're specifically checking that skipAssert is true, because according
     //   to the old API the second parameter was model. We do not want people who
     //   passed a model to skip the assertion.
-    Ember.assert("The controller "+name+" could not be found. Make sure the controller has been generated first. This will happen the first time the associated route is entered.", controller || _skipAssert === true);
+    Ember.assert("The controller for route '"+name+"'' could not be found. Make sure that this route exists and has already been entered at least once. If you must intialize the controller without entering a route, use `generateController`.", controller || _skipAssert === true);
 
     return controller;
   },
@@ -27068,8 +27180,6 @@ Ember.Route = Ember.Object.extend({
     var container = this.router.container;
 
     model = model || this.modelFor(name);
-
-    Ember.assert("You are trying to look up a controller that you did not define, and for which Ember does not know the model.\n\nThis is not a controller for a route, so you must explicitly define the controller ("+this.router.namespace.toString() + "." + Ember.String.capitalize(Ember.String.camelize(name))+"Controller) or pass a model as the second parameter to `controllerFor`, so that Ember knows which type of controller to create for you.", model || this.container.lookup('route:' + name));
 
     return Ember.generateController(container, name, model);
   },
@@ -28060,7 +28170,8 @@ Ember.onLoad('Ember.Handlebars', function(Handlebars) {
   */
   Ember.Handlebars.registerHelper('render', function(name, contextString, options) {
     Ember.assert("You must pass a template to render", arguments.length >= 2);
-    var container, router, controller, view, context, lookupOptions;
+    var contextProvided = arguments.length === 3,
+        container, router, controller, view, context, lookupOptions;
 
     if (arguments.length === 2) {
       options = contextString;
@@ -28076,7 +28187,7 @@ Ember.onLoad('Ember.Handlebars', function(Handlebars) {
     container = options.data.keywords.controller.container;
     router = container.lookup('router:main');
 
-    Ember.assert("You can only use the {{render}} helper once without a model object as its second argument, as in {{render \"post\" post}}.", context || !router || !router._lookupActiveView(name));
+    Ember.assert("You can only use the {{render}} helper once without a model object as its second argument, as in {{render \"post\" post}}.", contextProvided || !router || !router._lookupActiveView(name));
 
     view = container.lookup('view:' + name) || container.lookup('view:default');
 
@@ -28091,7 +28202,7 @@ Ember.onLoad('Ember.Handlebars', function(Handlebars) {
                       Ember.generateController(container, name, context);
     }
 
-    if (controller && context) {
+    if (controller && contextProvided) {
       controller.set('model', context);
     }
 
@@ -30174,6 +30285,7 @@ Ember.Application.reopenClass({
     container.normalize = normalize;
     container.resolver = resolverFor(namespace);
     container.describe = container.resolver.describe;
+    container.optionsForType('component', { singleton: false });
     container.optionsForType('view', { singleton: false });
     container.optionsForType('template', { instantiate: false });
     container.register('application:main', namespace, { instantiate: false });
